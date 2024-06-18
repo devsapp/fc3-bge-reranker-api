@@ -1,0 +1,97 @@
+edition: 3.0.0
+name: fc3-bge-reranker-api
+vars:
+  region: '{{ region }}'
+  functionName: '{{ functionName }}'
+  EMBEDDING_MODLE_NAME: 'bge-reranker-v2-m3' 
+  download_path: '/mnt/embedding-download'
+template:
+  Embedding-Template:
+    internetAccess: true
+    vpcConfig: auto
+resources:
+  fc-model-download:
+    component: fc3
+    actions:
+      complete-deploy: # 在deploy之后运行
+        - component: fc3 invoke --function-name embedding-download --region ${vars.region} --timeout 60000
+    props:
+      region: ${vars.region} # 关于变量的使用方法，可以参考：https://www.serverless-devs.com/serverless-devs/yaml#变量赋值
+      functionName: 'embedding-download'
+      description: '辅助函数，将模型下载到nas'
+      code: './code/source-code/download-model2nas'
+      runtime: nodejs16
+      timeout: 6000
+      memorySize: 4096
+      cpu: 2.0
+      diskSize: 512
+      instanceConcurrency: 100
+      handler: index.handler
+      nasConfig: auto
+      environmentVariables:
+        region: ${vars.region}
+        download_path: ${vars.download_path}
+      layers:
+        - >-
+          acs:fc:${vars.region}:1154600634854327:layers/fc-embedding-api-download-nas/versions/1
+    extend:
+      name: Embedding-Template
+  embedding-service:
+    component: fc3
+    props:
+      region: ${vars.region}
+      handler: index.handler
+      description: embedding service
+      timeout: 7200
+      layers:
+        - acs:fc:{{region}}:1431999136518149:layers/FastAPI-Python310/versions/1
+        - acs:fc:{{region}}:1154600634854327:layers/NLP-Python310/versions/1
+        - acs:fc:{{region}}:1154600634854327:layers/Datasets-Python310/versions/1
+      customRuntimeConfig:
+        port: 8000
+        command:
+          - python3
+          - '-u'
+          - app/main.py
+      instanceType: c1
+      runtime: custom.debian10
+      instanceConcurrency: 10
+      cpu: 8
+      memorySize: 16384
+      diskSize: 512
+      environmentVariables:
+        PATH: >-
+          /var/fc/lang/python3.10/bin::/usr/local/bin/apache-maven/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/ruby/bin:/opt/bin:/code:/code/bin
+        PYTHONPATH: /opt/python:/code
+        MODEL_PATH: '${vars.download_path}/${vars.EMBEDDING_MODLE_NAME}'
+        MODEL_FILE_HASH: 'd9e3e081faff1eefb84019509b2f5558fd74c1a05a2c7db22f74174fcedb5286'
+      functionName: '${vars.functionName}'
+      asyncConfiguration: {}
+      code: './code/source-code/embedding'
+      nasConfig: ${resources.fc-model-download.output.nasConfig}
+      triggers:
+        - triggerName: httpTrigger
+          description: ''
+          triggerType: http
+          triggerConfig:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - HEAD
+              - OPTIONS
+            authType: anonymous
+            disableURLInternet: false
+    extend:
+      name: Embedding-Template
+  embedding-service-domain:
+    component: fc3-domain
+    props:
+      region: ${vars.region}
+      domainName: auto
+      protocol: HTTP
+      routeConfig:
+        routes:
+          - path: /*
+            functionName: ${vars.functionName}
